@@ -1,0 +1,275 @@
+---
+title: "Learning DAGs and estimating (putative) intervention effects"
+subtitle: A practical workflow
+author:
+  - Giusi Moffa
+  - \twitter\ [a\_randomwalker](https://twitter.com/a_randomwalker) \email\ giusi.moffa@unibas.ch
+date: |
+  \today
+output: 
+  pdf_document:
+    latex_engine: "lualatex"
+header-includes:
+  - \usepackage{fontawesome5}
+  - \newfontfamily{\FAB}{Font Awesome 5 Brands Regular}
+  - \newfontfamily{\FAFR}{Font Awesome 5 Free Regular}
+  - \def\twitter{{\FAB \faTwitter}}
+  - \def\email{{\FAFR \symbol{"F0E0}}} 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+# Evaluating putative intervention effects: workflow
+
+## Install and load libraries
+
+The core packages for the analysis are [BiDAG: Bayesian Inference for Directed Acyclic Graphs](https://cran.r-project.org/web/packages/BiDAG/index.html) for sampling DAGs from the posterior distribution, and [Bestie: Bayesian Estimation of Intervention Effects](https://cran.r-project.org/web/packages/Bestie/index.html), both available from [CRAN (The Comprehensive R Archive Network)](https://cran.r-project.org/) for estimating intervention effects from a given DAG.
+
+The current version of `BiDAG` requires some [`Bioconductor`](http://www.bioconductor.org/) libraries, which it cannot install automatically. Especially:  `graph`, [`Rgraphviz`](http://www.bioconductor.org/packages/release/bioc/html/Rgraphviz.html). Therefore we need to check they are installed before attempting to install and load `BiDAG`.
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+if (!requireNamespace("graph", quietly = TRUE))
+  BiocManager::install("graph")
+
+if (!requireNamespace("Rgraphviz", quietly = TRUE))
+  BiocManager::install("Rgraphviz")
+
+```
+
+```{r, eval=FALSE, echo=FALSE}
+## Is RBGL not really needed?
+if (!requireNamespace("RBGL", quietly = TRUE))
+  BiocManager::install("RBGBL")
+```
+
+Once those libraries are installed we can install `BiDAG` and `Bestie`, which requires `BiDAG` in turn. 
+
+```{r}
+if (!requireNamespace("BiDAG", quietly = TRUE))
+  install.packages("BiDAG")
+require(BiDAG) ## for DAG sampling
+
+if (!requireNamespace("Bestie", quietly = TRUE))
+  install.packages("Bestie")
+require(Bestie) ## for intervention effects
+```
+
+Other libraries we use are (to be pre-installed if not already available on the machine we intend to use for the analysis)
+
+```{r}
+require(tidyverse)
+require(dplyr)
+require(magrittr)
+require(DiagrammeR)
+require(DiagrammeRsvg) ## for exporting svg for plotting to file
+require(rsvg) ## for converting svg to png
+```
+
+## Set-up a structure learning procedure with BiDAG 
+
+```{r}
+source("toyDAGfunctions.R")
+```
+
+Source a file with auxiliary functions, including the following functionalities
+
+* Sampling DAGs from a posterior distribution given data, building on BiDAG 
+
+<!--
+Eventually the same function can be adapted to take bde or bge score depending on whether the input data is binary or continuous
+-->
+
+The function `sampleDAGs()` relies on BiDAG functions to build a chain of DAGs from the posterior distributions given data (currently only for binary data or continuous data separately).
+
+The function consists of the following key steps/elements
+
+* define the search space for DAG sampling by iterating the following procedure until the DAG score no longer improves
+  * start from the skeleton obtained via the constraint based PC algorithm (other cheap algorithms may be used to define the starting search space)
+  * find a MAP DAG by mean of order MCMC when allowing each parent set to have one additional node with respect to the current search space
+  * add any new edges from the MAP to the previous search space
+  
+* sample a DAG to start the chain, by starting from a random order and running order MCMC on the search space defined before
+
+* starting from the DAG obtained via order MCMC build a chain sampling from the posterior distribution of DAGs, by using partition MCMC on the given search space
+
+<!--
+Thinning is not recommended more generally for MCMC methods, but it can still be useful when sampling each element of a chain is very expensive as it is the case with DAGs?
+
+It may be helpful to reset the seed after saving any intermediate outputs, in case one wishes to re-start the algorithm from that point, and still have it reproducible.
+
+Modify to 
+  - check if output files already exist before sampling
+  - save the highest scoring DAG?
+-->
+
+* Computing intervention effects for a given DAG, building on Bestie
+
+For each given DAG in the chain the function `computeEffects()` will evaluate intervention effects by using the `DAGintervention()` function from the `Bestie` package. The procedure involves sampling parameters and deriving a matrix of intervention effects for each DAG by implementing a version of Pearl's truncated formula.
+
+* Loading a collection of sampled DAGs and effects for further processing
+
+After the sampling procedure and estimation of intervention effects, we need functions to display the results. The purpose of the `loadsamples()` function is to perform a first step to combine the collections of DAGs sampled by the structure learning procedure for all batches. 
+
+* Plotting a summary "DAG" from a collection or chain of samples 
+
+The `dagviz()` function evaluates estimates of the posterior probability for the presence of each possible edge, by taking the proportion of DAGs in the chain where each edge appears. The it draws a DAG where the thickness of each edge is proportional to its probability of appearing in a DAG from the posterior distribution. Some customisation is possible via the arguments. _(Strictly speaking not guaranteed to produce a DAG)_
+
+
+* Plotting a matrix of posterior distributions of intervention effects
+
+The `plotEffects()` function builds a plot of the matrix of posterior distributions of intervention effects, from the collection of all effects drawn from each of the sampled DAG in the MCMC chain. By taking the average it we also get an estimate of the posterior mean for each effect.
+
+```{r, include=FALSE}
+PSYCHO_TOY <- FALSE
+```
+
+```{r, child=if (PSYCHO_TOY) 'toyDAGpsycho.Rmd'}
+```
+
+## Asia dataset
+
+The Asia dataset is a synthetic dataset by Lauritzen and Spiegelhalter _(‘Local Computation with Probabilities on Graphical Structures and their Application to Expert Systems (with discussion)’. Journal of the Royal Statistical Society: Series B, 1988)_ commonly used for benchmarking (https://www.bnlearn.com/bnrepository/discrete-small.html#asia ).
+
+Loading and formatting the data. The current implementation of BiDAG requires binary data in matrix rather than data frame format (else it may throw a rather unintelligible error). 
+
+```{r}
+## The Asia data is part of BiDAG
+Asia %>% as.matrix() -> inputData ## Data with no weights
+dataname <- "asia" ## to use in file names
+```
+
+## Implement the DAG sampling - Asia data
+
+Define the number of DAGs we wish to sample from the posterior for each run, and the seeds for each run (or batch of DAGs).
+
+_It may be useful to define some auxiliary variables, such as a vector of labels for plotting and a variable holding the number of nodes._
+
+```{r}
+nDAGs <- 100
+batch <- 101:120
+nSeeds <- length(batch)
+labels4plot <- colnames(inputData) 
+## equivalent to names(ncs4analysis)
+nNodes <- length(labels4plot)
+```
+
+Implement a sampling loop for a number of desired runs or batches.
+
+```{r, results='hide'}
+for(seednumber in batch){
+  timing <- proc.time()
+  print(paste("Seed is", seednumber))
+  sampleDAGs(inData=inputData,
+             scoretype="bde", 
+             bdepar = list(edgepf = 1, chi = 1),
+             nDigraphs=nDAGs, 
+             seed=seednumber,
+             dname=dataname)
+  computeEffects(n=nNodes, ## careful if files do not exist :)
+                 seed=seednumber, 
+                 dname=dataname)
+  print(proc.time() - timing)
+}
+```
+
+## Visualise results
+
+### Draw a summary DAG - Asia network
+
+Load and combine the collections of DAGs sampled by the structure learning procedure for all sampling batches. 
+
+```{r}
+data4plot <- loadsamples(seeds=batch, nn=nNodes, dname=dataname)
+allDAGs <- data4plot$alldigraphs
+allEffects <- data4plot$alleffs
+```
+
+\centering
+```{r, out.width="40%"}
+graph2plot <- dagviz(allDAGs,
+                     grouped_nodes = list(c(1,3), c(2, 4, 5) ))
+displayDAG(g2plot = graph2plot, figname=paste0(dataname, "DAG.png"))
+```
+
+
+#### Plot posterior distributions of intervention (causal) effects
+
+```{r}
+effectsTitle <- "Distributions of Downstream Causal Effects: toy dataset.\n"
+plotEffects(effects4plot = allEffects, # effects4plot$allarray,
+            sortlabs = order(labels4plot), title_text = effectsTitle)
+```
+
+\clearpage
+# Continuous dataset
+
+For demonstration we use the Boston Housing data, already available in `BiDAG`, or for example as part of the `MASS` package.
+
+For debugging and for the purpose of exposition, while ensuring running the algorithm is quick enough, we may wish to consider a subset of the variables.
+```{r}
+MASS::Boston %>% select(-chas, -rad) %>% 
+  ## discard non-continuous variables, for illustration only
+  {. ->> boston4analysis} %>% ## not strictly needed
+  as.matrix() %>% scale() -> inputData ## Data with no weights
+```
+
+## Implement the DAG sampling - Boston housing data
+
+```{r}
+nDAGs <- 50
+batch <- 101:117
+nSeeds <- length(batch)
+labels4plot <- colnames(inputData) 
+## equivalent to names(ncs4analysis)
+nNodes <- length(labels4plot)
+```
+
+Implement a sampling loop for a number of desired runs or batches.
+
+```{r, results='hide'}
+for(seednumber in batch){
+  timing <- proc.time()
+  print(paste("Seed is", seednumber))
+  sampleDAGs(inData=inputData,
+             scoretype = "bge", ## it should be BGe by default, bur Bestie throws an error
+             bgepar = list(am = 1, aw = NULL),
+             nDigraphs=nDAGs, 
+             seed=seednumber)
+  computeEffects(n=nNodes,
+                 seed=seednumber)
+  print(proc.time() - timing)
+}
+```
+
+## Visualise results for Boston housing data
+
+### Draw a summary DAG - Boston housing
+
+Load and combine the collections of DAGs sampled by the structure learning procedure for all sampling batches. 
+
+```{r}
+data4plot <- loadsamples(seeds=batch, nn=nNodes)
+allDAGs <- data4plot$alldigraphs
+allEffects <- data4plot$alleffs
+```
+
+\centering
+```{r, out.width="70%"}
+graph2plot <- dagviz(allDAGs)
+displayDAG(g2plot = graph2plot, figname="bostonDAG.png")
+```
+
+### Plot posterior distributions of intervention (causal) effects - Boston housing
+
+```{r}
+effectsTitle <- "Distributions of Downstream Causal Effects: toy dataset.\n"
+plotEffects(effects4plot = allEffects,
+            sortlabs = order(labels4plot), title_text = effectsTitle)
+```
