@@ -139,7 +139,7 @@ dagviz <- function(dags4plot, # roundprobs,
                    edge_styles = c("solid", "dashed")
                    ){
   ## calculate plotting parameters from the DAG data
-  dagsarray <- round(simplify2array(dags4plot), 8)
+  dagsarray <- round(simplify2array(lapply(dags4plot, as.matrix)), 8)
   edgeprobs <- apply(dagsarray, c(1,2), mean)
   roundprobs <- round(255*edgeprobs, 0) # rounded to 0-255 for line intensity
   
